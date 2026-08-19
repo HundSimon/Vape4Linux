@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "vape421_native.h"
 #include "loader_bootstrap.h"
 
@@ -7,8 +11,10 @@
 #include <stdlib.h>
 #include <wchar.h>
 #ifndef _WIN32
+#include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -73,6 +79,11 @@ void vape_log(const wchar_t *format, ...) {
     char encoded_message[8192];
     struct timespec now;
     struct tm local_time;
+    Dl_info module_information;
+    char module_path[PATH_MAX];
+    char log_path[PATH_MAX];
+    char *separator;
+    FILE *log_file = NULL;
     size_t encoded_length;
     va_list arguments;
 
@@ -94,6 +105,29 @@ void vape_log(const wchar_t *format, ...) {
             local_time.tm_mday, local_time.tm_hour, local_time.tm_min,
             local_time.tm_sec, now.tv_nsec / 1000000L, encoded_message);
     fflush(stderr);
+    if (dladdr((void *)&vape_log, &module_information) != 0
+            && module_information.dli_fname != NULL) {
+        if (realpath(module_information.dli_fname, module_path) == NULL) {
+            snprintf(module_path, sizeof(module_path), "%s",
+                    module_information.dli_fname);
+        }
+        separator = strrchr(module_path, '/');
+        if (separator != NULL) {
+            *separator = '\0';
+            if (snprintf(log_path, sizeof(log_path),
+                    "%s/vape421-native-%ld.log", module_path,
+                    (long)getpid()) < (int)sizeof(log_path)) {
+                log_file = fopen(log_path, "a");
+            }
+        }
+    }
+    if (log_file != NULL) {
+        fprintf(log_file, "[%04d-%02d-%02d %02d:%02d:%02d.%03ld] %s\n",
+                local_time.tm_year + 1900, local_time.tm_mon + 1,
+                local_time.tm_mday, local_time.tm_hour, local_time.tm_min,
+                local_time.tm_sec, now.tv_nsec / 1000000L, encoded_message);
+        fclose(log_file);
+    }
 #endif
 }
 
@@ -1051,6 +1085,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     return TRUE;
 }
 #else
+typedef struct force_bootstrap_arguments {
+    char payload_path[PATH_MAX];
+} force_bootstrap_arguments;
+
 static void sleep_milliseconds(long milliseconds) {
     struct timespec duration;
     duration.tv_sec = milliseconds / 1000;
@@ -1151,6 +1189,81 @@ failure:
         (*vm)->DetachCurrentThread(vm);
     }
     return JNI_ERR;
+}
+
+static void *force_bootstrap_thread(void *parameter) {
+    force_bootstrap_arguments *arguments =
+            (force_bootstrap_arguments *)parameter;
+    typedef jint (JNICALL *get_created_vms_fn)(JavaVM **, jsize, jsize *);
+    get_created_vms_fn get_created_vms;
+    JavaVM *vm = NULL;
+    jsize vm_count = 0;
+    wchar_t jar_path[PATH_MAX];
+    int attempt;
+
+    get_created_vms = (get_created_vms_fn)dlsym(
+            RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+    if (get_created_vms == NULL) {
+        vape_log(L"JNI_GetCreatedJavaVMs export is unavailable: %hs", dlerror());
+        free(arguments);
+        return NULL;
+    }
+    for (attempt = 0; attempt < 600; ++attempt) {
+        if (get_created_vms(&vm, 1, &vm_count) == JNI_OK
+                && vm != NULL && vm_count >= 1) {
+            break;
+        }
+        vm = NULL;
+        vm_count = 0;
+        sleep_milliseconds(100);
+    }
+    if (vm == NULL || vm_count < 1) {
+        vape_log(L"JNI_GetCreatedJavaVMs returned no VM");
+        free(arguments);
+        return NULL;
+    }
+    if (!resolve_payload_path(arguments->payload_path, jar_path,
+            sizeof(jar_path) / sizeof(jar_path[0]))) {
+        free(arguments);
+        return NULL;
+    }
+    vape_log(L"Loading Linux payload from %ls through native bootstrap",
+            jar_path);
+    if (bootstrap_attached_vm(vm, jar_path) == JNI_OK) {
+        vape_log(L"FORCE_BOOTSTRAP_SUCCESS");
+    } else {
+        vape_log(L"FORCE_BOOTSTRAP_FAILED");
+    }
+    free(arguments);
+    return NULL;
+}
+
+/* Called inside the target after ptrace has loaded this shared object. */
+__attribute__((visibility("default")))
+int Vape421_ForceBootstrap(const char *payload_path) {
+    force_bootstrap_arguments *arguments;
+    pthread_t thread;
+    size_t length;
+
+    if (payload_path == NULL || payload_path[0] != '/') {
+        return 0;
+    }
+    length = strnlen(payload_path, PATH_MAX);
+    if (length == 0 || length >= PATH_MAX) {
+        return 0;
+    }
+    arguments = (force_bootstrap_arguments *)calloc(1, sizeof(*arguments));
+    if (arguments == NULL) {
+        return 0;
+    }
+    memcpy(arguments->payload_path, payload_path, length + 1);
+    if (pthread_create(&thread, NULL, force_bootstrap_thread, arguments) != 0) {
+        free(arguments);
+        return 0;
+    }
+    pthread_detach(thread);
+    vape_log(L"Native bootstrap worker scheduled");
+    return 1;
 }
 
 JNIEXPORT jint JNICALL Agent_OnAttach(

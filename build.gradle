@@ -300,7 +300,8 @@ tasks.register('buildNative', Exec) {
     outputs.files(windowsHost
             ? [nativeBuildDirectory.map { it.file('dist/Vape421Native.dll') },
                nativeBuildDirectory.map { it.file('dist/Vape421Injector.exe') }]
-            : [nativeBuildDirectory.map { it.file('dist/libVape421Native.so') }])
+            : [nativeBuildDirectory.map { it.file('dist/libVape421Native.so') },
+               nativeBuildDirectory.map { it.file('dist/Vape421LinuxNativeInjector') }])
     doFirst {
         commandLine 'cmake', '--build', nativeBuildDirectory.get().asFile.absolutePath,
                 '--config', 'Release'
@@ -317,7 +318,7 @@ tasks.register('prepareInjectionBundle', Sync) {
     from(nativeBuildDirectory.map { it.dir('dist') }) {
         include windowsHost
                 ? ['Vape421Native.dll', 'Vape421Injector.exe']
-                : ['libVape421Native.so']
+                : ['libVape421Native.so', 'Vape421LinuxNativeInjector']
     }
     if (!windowsHost) {
         from(tasks.named('linuxInjectorJar', Jar).flatMap { it.archiveFile })
@@ -336,9 +337,13 @@ tasks.register('prepareInjectionBundle', Sync) {
                 windowsHost ? 'Vape421Native.dll' : 'libVape421Native.so').asFile
         def injector = injectionBundleDirectory.get().file(
                 windowsHost ? 'Vape421Injector.exe' : 'Vape421LinuxInjector.jar').asFile
+        def forceInjector = injectionBundleDirectory.get().file(
+                'Vape421LinuxNativeInjector').asFile
         def payload = injectionBundleDirectory.get().file('Vape421Payload.jar').asFile
         if (!nativeLibrary.isFile() || nativeLibrary.length() == 0L
                 || !injector.isFile() || injector.length() == 0L
+                || (!windowsHost && (!forceInjector.isFile()
+                    || forceInjector.length() == 0L))
                 || (!windowsHost && (!payload.isFile() || payload.length() == 0L))) {
             throw new GradleException('incomplete native injection bundle')
         }
@@ -358,6 +363,24 @@ tasks.register('linuxAgentSmokeTest', Exec) {
     doFirst {
         environment 'JAVA_HOME', nativeJavaHome.get()
         commandLine '/bin/sh', file('native/tests/linux/run_attach_smoke.sh').absolutePath,
+                projectDir.absolutePath
+    }
+}
+
+tasks.register('linuxForceInjectionSmokeTest', Exec) {
+    group = 'verification'
+    description = 'End-to-end ptrace/dlopen injection test with Attach disabled.'
+    onlyIf { !windowsHost }
+    dependsOn(tasks.named('prepareInjectionBundle'))
+    inputs.files(fileTree('native/tests/linux') {
+        include '**/*.java', 'ptrace_target_launcher.c',
+                'run_force_inject_smoke.sh'
+    })
+    outputs.file(layout.buildDirectory.file('linux-force-inject-smoke/target.log'))
+    doFirst {
+        environment 'JAVA_HOME', nativeJavaHome.get()
+        commandLine '/bin/sh',
+                file('native/tests/linux/run_force_inject_smoke.sh').absolutePath,
                 projectDir.absolutePath
     }
 }

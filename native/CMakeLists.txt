@@ -95,6 +95,17 @@ else()
     target_link_libraries(Vape421Native PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     set_target_properties(Vape421Native PROPERTIES
             BUILD_RPATH "" INSTALL_RPATH "")
+
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        add_executable(Vape421LinuxNativeInjector linux_injector.c)
+        target_compile_options(Vape421LinuxNativeInjector PRIVATE
+                -Wall -Wextra -Werror=implicit-function-declaration)
+        target_link_libraries(Vape421LinuxNativeInjector PRIVATE
+                ${CMAKE_DL_LIBS})
+    else()
+        message(FATAL_ERROR
+                "The Linux native injector currently supports x86_64 only")
+    endif()
 endif()
 
 set_target_properties(Vape421Native PROPERTIES
@@ -102,6 +113,10 @@ set_target_properties(Vape421Native PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist")
 if(TARGET Vape421Injector)
     set_target_properties(Vape421Injector PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist")
+endif()
+if(TARGET Vape421LinuxNativeInjector)
+    set_target_properties(Vape421LinuxNativeInjector PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist")
 endif()
 
@@ -114,6 +129,11 @@ foreach(configuration Debug Release RelWithDebInfo MinSizeRel)
             "${CMAKE_BINARY_DIR}/dist")
     if(TARGET Vape421Injector)
         set_target_properties(Vape421Injector PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY_${configuration_upper}
+                "${CMAKE_BINARY_DIR}/dist")
+    endif()
+    if(TARGET Vape421LinuxNativeInjector)
+        set_target_properties(Vape421LinuxNativeInjector PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY_${configuration_upper}
                 "${CMAKE_BINARY_DIR}/dist")
     endif()

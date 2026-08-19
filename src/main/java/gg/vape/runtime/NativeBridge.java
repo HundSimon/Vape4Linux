@@ -568,12 +568,76 @@ public class NativeBridge {
             return vanillaVersion;
         }
 
+        // Lunar Genesis exposes the game in its named namespace and loads it
+        // through Ichor.  That means none of the Forge or obfuscated/Fabric
+        // class anchors above are necessarily visible from the injected
+        // payload loader.  The launcher still passes an authoritative
+        // `--version` argument in sun.java.command, so use that narrow signal
+        // before giving up.  Do not log the full command because it can also
+        // contain account credentials.
+        int commandVersion = detectLauncherCommandVersion(
+                System.getProperty("sun.java.command", ""));
+        if (commandVersion != 0) {
+            vanillaMappingVersion = commandVersion;
+            sce("Minecraft version detected from launcher command: id=" + commandVersion);
+            return commandVersion;
+        }
+
         IllegalStateException failure = new IllegalStateException(
                 "Unable to determine Minecraft/Forge version");
         if (lastFailure != null) {
             failure.initCause(lastFailure);
         }
         throw failure;
+    }
+
+    private static int detectLauncherCommandVersion(String command) {
+        if (command == null || command.isEmpty()) {
+            return 0;
+        }
+        String[] arguments = command.trim().split("\\s+");
+        for (int index = 0; index < arguments.length; ++index) {
+            String value = null;
+            if ("--version".equals(arguments[index]) && index + 1 < arguments.length) {
+                value = arguments[++index];
+            } else if (arguments[index].startsWith("--version=")) {
+                value = arguments[index].substring("--version=".length());
+            }
+            if (value == null) {
+                continue;
+            }
+            if ("1.21.11".equals(value)) {
+                return 61;
+            }
+            if ("1.21.10".equals(value)) {
+                return 60;
+            }
+            if ("1.21.6".equals(value)) {
+                return 56;
+            }
+            if ("1.21.5".equals(value)) {
+                return 55;
+            }
+            if ("1.21.4".equals(value)) {
+                return 54;
+            }
+            if ("1.21".equals(value) || "1.21.0".equals(value)) {
+                return 51;
+            }
+            if ("1.20.6".equals(value)) {
+                return 50;
+            }
+            if ("1.12.2".equals(value)) {
+                return 23;
+            }
+            if ("1.8.9".equals(value)) {
+                return 15;
+            }
+            if ("1.7.10".equals(value)) {
+                return 13;
+            }
+        }
+        return 0;
     }
 
     private static boolean isClassPresent(String className) {

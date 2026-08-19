@@ -59,7 +59,10 @@ public final class GlfwWaylandInputHook {
             Object window = invokeNoArgs(minecraft, minecraft.getClass(),
                     "method_22683", "getWindow");
             long handle = ((Number)invokeNoArgs(window, window.getClass(),
-                    "method_4490", "getWindow")).longValue();
+                    // 1.21.11 renamed Window#getWindow to Window#handle.
+                    // Keep intermediary, SRG and older named spellings for
+                    // the other supported runtime namespaces.
+                    "method_4490", "m_417542_", "getWindow", "handle")).longValue();
             if (handle == 0L) {
                 throw new IllegalStateException("Minecraft returned a null GLFW window");
             }
@@ -194,14 +197,18 @@ public final class GlfwWaylandInputHook {
     private static Object invokeNoArgs(Object receiver, Class<?> type, String... names)
             throws Exception {
         for (String name : names) {
-            try {
-                Method method = type.getMethod(name);
-                return method.invoke(receiver);
-            }
-            catch (NoSuchMethodException ignored) {
+            for (Class<?> owner = type; owner != null; owner = owner.getSuperclass()) {
+                try {
+                    Method method = owner.getDeclaredMethod(name);
+                    method.setAccessible(true);
+                    return method.invoke(receiver);
+                }
+                catch (NoSuchMethodException ignored) {
+                }
             }
         }
-        throw new NoSuchMethodException(type.getName());
+        throw new NoSuchMethodException(type.getName() + " "
+                + java.util.Arrays.toString(names));
     }
 
     private static Class<?> loadFirst(ClassLoader loader, String... names)

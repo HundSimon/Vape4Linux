@@ -95,6 +95,13 @@ Outputs are written to `build/dist`:
 - `Vape421Native.dll`
 - `Vape421Injector.exe`
 
+On Linux x86_64 the corresponding native outputs are
+`libVape421Native.so` and `Vape421LinuxNativeInjector`. The latter uses
+`ptrace` to call the target's `dlopen`, then invokes the library's exported
+native bootstrap. This path is independent of the HotSpot Attach Listener and
+therefore also works when the JVM was launched with
+`-XX:+DisableAttachMechanism`, subject to Linux ptrace permissions.
+
 ## Direct injection
 
 `Vape421Native.dll` contains the recovered Java product as an `RCDATA`
