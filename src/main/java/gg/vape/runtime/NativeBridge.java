@@ -11,7 +11,10 @@ import gg.vape.reflect.Vanilla12111Mappings;
 import gg.vape.reflect.Vanilla1710Mappings;
 import gg.vape.reflect.Vanilla189Mappings;
 import gg.vape.reflect.Vanilla262Mappings;
+import gg.vape.input.PlatformInputBridge;
+import gg.vape.input.GlfwWaylandInputHook;
 import gg.vape.ui.click.GuiScreenNativeCallbackBridge;
+import gg.vape.utils.ClipboardUtil;
 import gg.vape.utils.Base64Util;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -348,6 +351,10 @@ public class NativeBridge {
     public static void start() throws Throwable {
         forgeAbsent = !isClassPresent("net.minecraftforge.common.ForgeVersion")
                 && !isClassPresent("net.minecraftforge.fml.loading.FMLLoader");
+        // The GLFW bridge is independent from account and recovered mapping
+        // initialization.  Schedule it first so platform input remains usable
+        // even when an optional legacy initialization stage fails.
+        GlfwWaylandInputHook.installAsync();
         Vape vape = new Vape();
         NativeBridge.invokeVoidInit(vape, "loadMappings");
         if (badlion189Runtime) {
@@ -418,6 +425,35 @@ public class NativeBridge {
 
     //ClipboardCopy
     public static native void cpy(String text);
+
+    /** POSIX native bridge callback; keeps clipboard access in the game API. */
+    public static void platformCopy(String text) {
+        ClipboardUtil.setText(text);
+    }
+
+    /** POSIX native bridge callback backed by in-process input state. */
+    public static short platformGetKeyState(int virtualKey) {
+        return PlatformInputBridge.getVirtualKeyState(virtualKey);
+    }
+
+    public static int platformMapKey(int code, int mapType) {
+        return code;
+    }
+
+    public static String platformGetKeyName(long keyData) {
+        int scanCode = (int)((keyData >>> 16) & 0xffL);
+        if (scanCode >= 32 && scanCode <= 126) {
+            return Character.toString((char)scanCode);
+        }
+        return "Key " + scanCode;
+    }
+
+    /**
+     * Wayland intentionally has no desktop-wide PostMessage equivalent.
+     * Synthetic game actions are implemented at the Minecraft input layer.
+     */
+    public static void platformSendMouse(int buttonMask, int message) {
+    }
 
     public static long smpm(boolean pressed, long windowHandle, int button,
                             long cursorPosition, long extraInfo) {

@@ -4,12 +4,21 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <wchar.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 static volatile LONG g_loaded_by_jni = 0;
 
 #define VAPE421_PRODUCT_JAR_RESOURCE_ID 421
 
+#ifdef _WIN32
 static int module_directory(wchar_t *output, size_t capacity) {
     DWORD length;
     wchar_t *separator;
@@ -27,8 +36,10 @@ static int module_directory(wchar_t *output, size_t capacity) {
     *separator = L'\0';
     return 1;
 }
+#endif
 
 void vape_log(const wchar_t *format, ...) {
+#ifdef _WIN32
     wchar_t message[2048];
     wchar_t line[2304];
     wchar_t directory[MAX_PATH];
@@ -57,6 +68,33 @@ void vape_log(const wchar_t *format, ...) {
         fputws(line, file);
         fclose(file);
     }
+#else
+    wchar_t message[2048];
+    char encoded_message[8192];
+    struct timespec now;
+    struct tm local_time;
+    size_t encoded_length;
+    va_list arguments;
+
+    va_start(arguments, format);
+    vswprintf(message, sizeof(message) / sizeof(message[0]), format, arguments);
+    va_end(arguments);
+    encoded_length = wcstombs(encoded_message, message,
+            sizeof(encoded_message) - 1);
+    if (encoded_length == (size_t)-1) {
+        snprintf(encoded_message, sizeof(encoded_message),
+                "<unprintable native log message>");
+    } else {
+        encoded_message[encoded_length] = '\0';
+    }
+    clock_gettime(CLOCK_REALTIME, &now);
+    localtime_r(&now.tv_sec, &local_time);
+    fprintf(stderr, "[%04d-%02d-%02d %02d:%02d:%02d.%03ld] %s\n",
+            local_time.tm_year + 1900, local_time.tm_mon + 1,
+            local_time.tm_mday, local_time.tm_hour, local_time.tm_min,
+            local_time.tm_sec, now.tv_nsec / 1000000L, encoded_message);
+    fflush(stderr);
+#endif
 }
 
 void vape_log_pending_exception(JNIEnv *env, const wchar_t *context) {
@@ -64,9 +102,13 @@ void vape_log_pending_exception(JNIEnv *env, const wchar_t *context) {
     jclass throwable_class;
     jmethodID to_string;
     jstring text;
+#ifdef _WIN32
     const jchar *characters;
     jsize length;
     wchar_t buffer[1024];
+#else
+    const char *characters;
+#endif
     if (env == NULL || !(*env)->ExceptionCheck(env)) {
         vape_log(L"%ls failed without a Java exception", context);
         return;
@@ -83,6 +125,7 @@ void vape_log_pending_exception(JNIEnv *env, const wchar_t *context) {
         vape_log(L"%ls raised an unreadable Java exception", context);
         return;
     }
+#ifdef _WIN32
     characters = (*env)->GetStringChars(env, text, NULL);
     length = (*env)->GetStringLength(env, text);
     if (characters != NULL) {
@@ -92,15 +135,42 @@ void vape_log_pending_exception(JNIEnv *env, const wchar_t *context) {
         (*env)->ReleaseStringChars(env, text, characters);
         vape_log(L"%ls: %ls", context, buffer);
     }
+#else
+    characters = (*env)->GetStringUTFChars(env, text, NULL);
+    if (characters != NULL) {
+        vape_log(L"%ls: %hs", context, characters);
+        (*env)->ReleaseStringUTFChars(env, text, characters);
+    }
+#endif
 }
 
 static jstring new_wide_string(JNIEnv *env, const wchar_t *value) {
     if (value == NULL) {
         return NULL;
     }
+#ifdef _WIN32
     return (*env)->NewString(env, (const jchar *)value, (jsize)wcslen(value));
+#else
+    {
+        size_t capacity = wcstombs(NULL, value, 0);
+        char *utf8;
+        jstring result;
+        if (capacity == (size_t)-1) {
+            return NULL;
+        }
+        utf8 = (char *)malloc(capacity + 1);
+        if (utf8 == NULL) {
+            return NULL;
+        }
+        wcstombs(utf8, value, capacity + 1);
+        result = (*env)->NewStringUTF(env, utf8);
+        free(utf8);
+        return result;
+    }
+#endif
 }
 
+#ifdef _WIN32
 static int materialize_embedded_product_jar(
         wchar_t *jar_path, size_t jar_capacity) {
     HRSRC resource;
@@ -184,6 +254,7 @@ cleanup:
     }
     return result;
 }
+#endif
 
 static jobject find_client_class_loader(JNIEnv *env) {
     jint thread_count = 0;
@@ -775,6 +846,7 @@ static int set_current_context_class_loader(JNIEnv *env, jobject loader) {
 }
 
 static int pin_native_module(void) {
+#ifdef _WIN32
     HMODULE pinned = NULL;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                     | GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -782,6 +854,7 @@ static int pin_native_module(void) {
         vape_log(L"GetModuleHandleExW(PIN) failed: %lu", GetLastError());
         return 0;
     }
+#endif
     return 1;
 }
 
@@ -799,6 +872,7 @@ static int call_bridge_start(JNIEnv *env, jclass bridge_class) {
     return 1;
 }
 
+#ifdef _WIN32
 static DWORD WINAPI bootstrap_thread(LPVOID parameter) {
     HMODULE jvm_module;
     FARPROC created_vms_address;
@@ -976,3 +1050,147 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     }
     return TRUE;
 }
+#else
+static void sleep_milliseconds(long milliseconds) {
+    struct timespec duration;
+    duration.tv_sec = milliseconds / 1000;
+    duration.tv_nsec = (milliseconds % 1000) * 1000000L;
+    while (nanosleep(&duration, &duration) != 0 && errno == EINTR) {
+    }
+}
+
+static int resolve_payload_path(
+        const char *options, wchar_t *output, size_t capacity) {
+    const char *input = options;
+    char resolved[PATH_MAX];
+    struct stat metadata;
+    size_t converted;
+
+    if (input != NULL && strncmp(input, "payload=", 8) == 0) {
+        input += 8;
+    }
+    if (input == NULL || input[0] != '/') {
+        vape_log(L"Agent options must contain an absolute payload JAR path");
+        return 0;
+    }
+    if (realpath(input, resolved) == NULL
+            || stat(resolved, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+        vape_log(L"Payload JAR path is not a readable regular file");
+        return 0;
+    }
+    if (access(resolved, R_OK) != 0) {
+        vape_log(L"Payload JAR is not readable by the target JVM");
+        return 0;
+    }
+    converted = mbstowcs(output, resolved, capacity);
+    if (converted == (size_t)-1 || converted >= capacity) {
+        vape_log(L"Payload JAR path cannot be represented in the target locale");
+        return 0;
+    }
+    output[converted] = L'\0';
+    return 1;
+}
+
+static jint bootstrap_attached_vm(JavaVM *vm, const wchar_t *jar_path) {
+    JNIEnv *env = NULL;
+    jobject loader = NULL;
+    jclass bridge_class = NULL;
+    jint env_result;
+    int attached = 0;
+    int attempt;
+
+    if (vm == NULL || jar_path == NULL) {
+        return JNI_ERR;
+    }
+    env_result = (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_8);
+    if (env_result == JNI_EDETACHED) {
+        if ((*vm)->AttachCurrentThreadAsDaemon(vm, (void **)&env, NULL) != JNI_OK) {
+            vape_log(L"AttachCurrentThreadAsDaemon failed");
+            return JNI_ERR;
+        }
+        attached = 1;
+    } else if (env_result != JNI_OK || env == NULL) {
+        vape_log(L"JNI 1.8 is unavailable: %d", env_result);
+        return JNI_ERR;
+    }
+    if (!vape_loader_bootstrap_initialize()
+            || vape_initialize_jvmti(vm) != JNI_OK) {
+        goto failure;
+    }
+    for (attempt = 0; attempt < 600 && loader == NULL; ++attempt) {
+        loader = find_client_class_loader(env);
+        if (loader == NULL) {
+            sleep_milliseconds(100);
+        }
+    }
+    if (loader == NULL) {
+        vape_log(L"Minecraft client/render thread was not found within 60 seconds");
+        goto failure;
+    }
+    if (!add_jar_to_loader(env, &loader, jar_path)
+            || !set_current_context_class_loader(env, loader)) {
+        goto failure;
+    }
+    bridge_class = load_bridge_class(env, loader);
+    if (bridge_class == NULL
+            || vape_register_native_bridge(env, bridge_class) != JNI_OK
+            || !pin_native_module()
+            || !call_bridge_start(env, bridge_class)) {
+        goto failure;
+    }
+    vape_loader_report_completed();
+    vape_log(L"NativeBridge.start completed; Linux injection is active");
+    if (attached) {
+        (*vm)->DetachCurrentThread(vm);
+    }
+    return JNI_OK;
+
+failure:
+    vape_loader_report_failure("Linux native agent bootstrap failed");
+    if (attached) {
+        (*vm)->DetachCurrentThread(vm);
+    }
+    return JNI_ERR;
+}
+
+JNIEXPORT jint JNICALL Agent_OnAttach(
+        JavaVM *vm, char *options, void *reserved) {
+    wchar_t jar_path[PATH_MAX];
+    (void)reserved;
+    if (!resolve_payload_path(options, jar_path,
+            sizeof(jar_path) / sizeof(jar_path[0]))) {
+        return JNI_ERR;
+    }
+    vape_log(L"Loading Linux payload from %ls", jar_path);
+    return bootstrap_attached_vm(vm, jar_path);
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    JNIEnv *env = NULL;
+    jclass bridge_class;
+    (void)reserved;
+    InterlockedExchange(&g_loaded_by_jni, 1);
+    if (!vape_loader_bootstrap_initialize()
+            || (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_8) != JNI_OK
+            || env == NULL
+            || vape_initialize_jvmti(vm) != JNI_OK) {
+        return JNI_ERR;
+    }
+    bridge_class = (*env)->FindClass(env, "gg/vape/runtime/NativeBridge");
+    if (bridge_class == NULL
+            || vape_register_native_bridge(env, bridge_class) != JNI_OK) {
+        vape_log_pending_exception(env, L"JNI_OnLoad NativeBridge registration");
+        return JNI_ERR;
+    }
+    return JNI_VERSION_1_8;
+}
+
+JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
+    JNIEnv *env = NULL;
+    (void)reserved;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_8) == JNI_OK) {
+        vape_release_native_bridge(env);
+    }
+    vape_loader_bootstrap_clear();
+}
+#endif

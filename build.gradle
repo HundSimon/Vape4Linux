@@ -18,6 +18,10 @@ sourceSets {
         java.srcDirs = ['src/main/java']
         resources.srcDirs = ['src/main/resources']
     }
+    linuxInjector {
+        java.srcDirs = ['tools/linux-injector/src/main/java']
+        resources.srcDirs = []
+    }
 }
 
 dependencies {
@@ -57,6 +61,32 @@ tasks.withType(JavaCompile).configureEach {
     // Product default is 17; pass -PtargetRelease=8 to prove Java 8 (MC 1.8.9) compatibility.
     options.release = (project.findProperty('targetRelease') ?: '17') as int
     options.compilerArgs += ['-Xmaxerrs', '10000', '-Xdiags:verbose']
+}
+
+tasks.named('compileLinuxInjectorJava', JavaCompile) {
+    options.release = 11
+}
+
+tasks.register('linuxInjectorJar', Jar) {
+    group = 'injection'
+    description = 'Builds the Linux jdk.attach based native-agent loader.'
+    dependsOn(tasks.named('linuxInjectorClasses'))
+    archiveBaseName = 'Vape421LinuxInjector'
+    archiveVersion = ''
+    from(sourceSets.linuxInjector.output)
+    manifest {
+        attributes('Main-Class': 'gg.vape.tools.LinuxAttachInjector')
+    }
+}
+
+tasks.register('resolveAuditedDependencies') {
+    group = 'verification'
+    description = 'Resolves fixed build/runtime artifacts for an audited offline build.'
+    doLast {
+        def resolved = configurations.runtimeClasspath.files.sort { it.name }
+        println("audited runtime artifacts (${resolved.size()}):")
+        resolved.each { artifact -> println("  ${artifact.name}") }
+    }
 }
 
 tasks.register('verifyRecoveredSources') {
@@ -230,7 +260,10 @@ def injectionBundleDirectory = layout.buildDirectory.dir('injection')
 def recoveredProductJar = tasks.named('injectionJar', Jar).flatMap { it.archiveFile }
 def nativeJavaHome = providers.gradleProperty('nativeJavaHome')
         .orElse(providers.environmentVariable('JAVA_HOME'))
-        .orElse('C:/Program Files/Java/jdk1.8.0_301')
+        .orElse(org.gradle.internal.os.OperatingSystem.current().isWindows()
+                ? 'C:/Program Files/Java/jdk1.8.0_301'
+                : System.getProperty('java.home'))
+def windowsHost = org.gradle.internal.os.OperatingSystem.current().isWindows()
 
 tasks.register('configureNative', Exec) {
     group = 'injection'
@@ -243,12 +276,15 @@ tasks.register('configureNative', Exec) {
     })
     outputs.file(nativeBuildDirectory.map { it.file('CMakeCache.txt') })
     doFirst {
-        commandLine 'cmake',
+        def arguments = ['cmake',
                 '-S', nativeSourceDirectory.absolutePath,
                 '-B', nativeBuildDirectory.get().asFile.absolutePath,
-                '-A', 'x64',
                 "-DVAPE421_JAVA_HOME=${nativeJavaHome.get()}",
-                "-DVAPE421_PRODUCT_JAR=${recoveredProductJar.get().asFile.absolutePath}"
+                "-DVAPE421_PRODUCT_JAR=${recoveredProductJar.get().asFile.absolutePath}"]
+        if (windowsHost) {
+            arguments.addAll(5, ['-A', 'x64'])
+        }
+        commandLine arguments
     }
 }
 
@@ -261,9 +297,10 @@ tasks.register('buildNative', Exec) {
         include 'CMakeLists.txt', '*.c', '*.h', '*.rc.in'
         exclude 'legacy_*'
     })
-    outputs.files(
-            nativeBuildDirectory.map { it.file('dist/Vape421Native.dll') },
-            nativeBuildDirectory.map { it.file('dist/Vape421Injector.exe') })
+    outputs.files(windowsHost
+            ? [nativeBuildDirectory.map { it.file('dist/Vape421Native.dll') },
+               nativeBuildDirectory.map { it.file('dist/Vape421Injector.exe') }]
+            : [nativeBuildDirectory.map { it.file('dist/libVape421Native.so') }])
     doFirst {
         commandLine 'cmake', '--build', nativeBuildDirectory.get().asFile.absolutePath,
                 '--config', 'Release'
@@ -272,20 +309,55 @@ tasks.register('buildNative', Exec) {
 
 tasks.register('prepareInjectionBundle', Sync) {
     group = 'injection'
-    description = 'Creates the DLL-only injection bundle for an isolated 1.8.9 test.'
+    description = 'Creates a platform injection bundle for an isolated test.'
     dependsOn(tasks.named('buildNative'))
-    from(nativeBuildDirectory.map { it.dir('dist') }) {
-        include 'Vape421Native.dll', 'Vape421Injector.exe'
+    if (!windowsHost) {
+        dependsOn(tasks.named('linuxInjectorJar'))
     }
-    from(file('native/README.md'))
+    from(nativeBuildDirectory.map { it.dir('dist') }) {
+        include windowsHost
+                ? ['Vape421Native.dll', 'Vape421Injector.exe']
+                : ['libVape421Native.so']
+    }
+    if (!windowsHost) {
+        from(tasks.named('linuxInjectorJar', Jar).flatMap { it.archiveFile })
+        from(recoveredProductJar) {
+            rename { 'Vape421Payload.jar' }
+        }
+        from(file('README.md')) {
+            rename { 'README.md' }
+        }
+    } else {
+        from(file('native/README.md'))
+    }
     into(injectionBundleDirectory)
     doLast {
-        def dll = injectionBundleDirectory.get().file('Vape421Native.dll').asFile
-        def injector = injectionBundleDirectory.get().file('Vape421Injector.exe').asFile
-        if (!dll.isFile() || dll.length() == 0L
-                || !injector.isFile() || injector.length() == 0L) {
+        def nativeLibrary = injectionBundleDirectory.get().file(
+                windowsHost ? 'Vape421Native.dll' : 'libVape421Native.so').asFile
+        def injector = injectionBundleDirectory.get().file(
+                windowsHost ? 'Vape421Injector.exe' : 'Vape421LinuxInjector.jar').asFile
+        def payload = injectionBundleDirectory.get().file('Vape421Payload.jar').asFile
+        if (!nativeLibrary.isFile() || nativeLibrary.length() == 0L
+                || !injector.isFile() || injector.length() == 0L
+                || (!windowsHost && (!payload.isFile() || payload.length() == 0L))) {
             throw new GradleException('incomplete native injection bundle')
         }
         println("self-contained injection bundle: ${injectionBundleDirectory.get().asFile}")
+    }
+}
+
+tasks.register('linuxAgentSmokeTest', Exec) {
+    group = 'verification'
+    description = 'End-to-end Attach/JVMTI smoke test with a benign stub payload.'
+    onlyIf { !windowsHost }
+    dependsOn(tasks.named('prepareInjectionBundle'))
+    inputs.files(
+            fileTree('native/tests/linux') { include '**/*.java', '*.sh' },
+            tasks.named('linuxInjectorJar', Jar).flatMap { it.archiveFile })
+    outputs.file(layout.buildDirectory.file('linux-agent-smoke/target.log'))
+    doFirst {
+        environment 'JAVA_HOME', nativeJavaHome.get()
+        commandLine '/bin/sh', file('native/tests/linux/run_attach_smoke.sh').absolutePath,
+                projectDir.absolutePath
     }
 }

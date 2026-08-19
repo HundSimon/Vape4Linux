@@ -5,7 +5,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import gg.vape.api.ApiHttpStatusException;
-import gg.vape.api.ApiPermissiveX509ExtendedTrustManager;
 import gg.vape.api.ApiResponse;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -14,15 +13,11 @@ import java.io.Reader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.function.Function;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.Nullable;
 
@@ -53,18 +48,10 @@ public class ApiHttpClient {
 
     private static <T> T withConnection(String url, Function<HttpURLConnection, T> requestHandler) throws Exception {
         try {
-            TrustManager[] trustManagers = new TrustManager[]{new ApiPermissiveX509ExtendedTrustManager()};
-            SSLContext sslContext = SSLContext.getInstance("SSL");
-            sslContext.init(null, trustManagers, new SecureRandom());
             HttpURLConnection connection = (HttpURLConnection)new URL(url).openConnection();
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(15000);
             connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10.4; en-US; rv:1.9.2.2) Gecko/20100316 Firefox/3.6.2");
-            if (connection instanceof HttpsURLConnection) {
-                HttpsURLConnection httpsConnection = (HttpsURLConnection)connection;
-                httpsConnection.setSSLSocketFactory(sslContext.getSocketFactory());
-                httpsConnection.setHostnameVerifier((hostname, session) -> true);
-            }
             return requestHandler.apply(connection);
         }
         catch (Throwable error) {

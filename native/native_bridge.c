@@ -31,10 +31,12 @@ static jint g_redefinition_length = 0;
 static jclass g_bridge_class = NULL;
 static jmethodID g_bridge_om = NULL;
 static jmethodID g_bridge_wh = NULL;
+#ifdef _WIN32
 static volatile LONG g_windows_display_registered = 0;
 static volatile LONG g_lwjgl3_window_registered = 0;
 static HWND g_lwjgl3_window = NULL;
 static WNDPROC g_lwjgl3_original_wndproc = NULL;
+#endif
 
 static void log_jvmti_failure(const wchar_t *operation, jvmtiError error,
         jclass target) {
@@ -417,6 +419,7 @@ static jint JNICALL native_scb(
 
 static void JNICALL native_smd(
         JNIEnv *env, jclass bridge, jint button_mask, jint message) {
+#ifdef _WIN32
     POINT point;
     HWND window;
     WCHAR class_name[256];
@@ -440,33 +443,70 @@ static void JNICALL native_smd(
             || message == WM_MBUTTONDOWN ? (WPARAM)button_mask : 0;
     PostMessageW(window, (UINT)message, wparam,
             MAKELPARAM((WORD)point.x, (WORD)point.y));
+#else
+    jmethodID method = (*env)->GetStaticMethodID(env, bridge,
+            "platformSendMouse", "(II)V");
+    if (method != NULL) {
+        (*env)->CallStaticVoidMethod(env, bridge, method,
+                button_mask, message);
+    }
+#endif
 }
 
 static jshort JNICALL native_gks(JNIEnv *env, jclass bridge, jint virtual_key) {
+#ifdef _WIN32
     unsigned short state;
     (void)env;
     (void)bridge;
     state = (unsigned short)GetAsyncKeyState(virtual_key);
     return (jshort)((state >> 7) & 0x100);
+#else
+    jmethodID method = (*env)->GetStaticMethodID(env, bridge,
+            "platformGetKeyState", "(I)S");
+    if (method == NULL) {
+        return 0;
+    }
+    return (*env)->CallStaticShortMethod(env, bridge, method, virtual_key);
+#endif
 }
 
 static jstring JNICALL native_gkn(JNIEnv *env, jclass bridge, jlong key_data) {
+#ifdef _WIN32
     CHAR name[1024];
     (void)bridge;
     memset(name, 0, sizeof(name));
     GetKeyNameTextA((LONG)key_data, name, (int)sizeof(name));
     return (*env)->NewStringUTF(env, name);
+#else
+    jmethodID method = (*env)->GetStaticMethodID(env, bridge,
+            "platformGetKeyName", "(J)Ljava/lang/String;");
+    if (method == NULL) {
+        return (*env)->NewStringUTF(env, "");
+    }
+    return (jstring)(*env)->CallStaticObjectMethod(
+            env, bridge, method, key_data);
+#endif
 }
 
 static jint JNICALL native_mvk(
         JNIEnv *env, jclass bridge, jint code, jint map_type) {
+#ifdef _WIN32
     (void)env;
     (void)bridge;
     return (jint)MapVirtualKeyA((UINT)code, (UINT)map_type);
+#else
+    jmethodID method = (*env)->GetStaticMethodID(env, bridge,
+            "platformMapKey", "(II)I");
+    if (method == NULL) {
+        return code;
+    }
+    return (*env)->CallStaticIntMethod(env, bridge, method, code, map_type);
+#endif
 }
 
 static void JNICALL native_cpy(
         JNIEnv *env, jclass bridge, jstring text) {
+#ifdef _WIN32
     const char *chars;
     SIZE_T byte_count;
     HGLOBAL memory = NULL;
@@ -517,6 +557,13 @@ cleanup:
         GlobalFree(memory);
     }
     (*env)->ReleaseStringUTFChars(env, text, chars);
+#else
+    jmethodID method = (*env)->GetStaticMethodID(env, bridge,
+            "platformCopy", "(Ljava/lang/String;)V");
+    if (method != NULL) {
+        (*env)->CallStaticVoidMethod(env, bridge, method, text);
+    }
+#endif
 }
 
 static jbyteArray JNICALL native_gcb(JNIEnv *env, jclass bridge, jclass target) {
@@ -654,6 +701,7 @@ static jbyteArray JNICALL native_gfb(
     return result;
 }
 
+#ifdef _WIN32
 static void JNICALL windows_display_update(JNIEnv *env, jclass owner) {
     MSG message;
     jboolean handled;
@@ -838,6 +886,16 @@ static void JNICALL native_trs(JNIEnv *env, jclass bridge, jint step) {
     }
     (*g_jvmti)->Deallocate(g_jvmti, (unsigned char *)classes);
 }
+#else
+static void JNICALL native_trs(JNIEnv *env, jclass bridge, jint step) {
+    (void)env;
+    (void)bridge;
+    vape_loader_report_progress((int)step);
+    if (step == 23) {
+        vape_log(L"Linux input uses in-process callbacks; no native window hook installed");
+    }
+}
+#endif
 
 enum primitive_kind {
     PRIMITIVE_REFERENCE = -1,
@@ -1225,19 +1283,23 @@ void vape_release_native_bridge(JNIEnv *env) {
     }
     clear_persisted_classes(env);
     InterlockedExchange(&g_retain_class_transforms, 0);
+#ifdef _WIN32
     if (g_lwjgl3_window != NULL && g_lwjgl3_original_wndproc != NULL
             && IsWindow(g_lwjgl3_window)) {
         SetWindowLongPtrW(g_lwjgl3_window, GWLP_WNDPROC,
                 (LONG_PTR)g_lwjgl3_original_wndproc);
     }
+#endif
     if (env != NULL && g_bridge_class != NULL) {
         (*env)->DeleteGlobalRef(env, g_bridge_class);
     }
     g_bridge_class = NULL;
     g_bridge_om = NULL;
     g_bridge_wh = NULL;
+#ifdef _WIN32
     g_lwjgl3_window = NULL;
     g_lwjgl3_original_wndproc = NULL;
     InterlockedExchange(&g_windows_display_registered, 0);
     InterlockedExchange(&g_lwjgl3_window_registered, 0);
+#endif
 }

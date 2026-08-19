@@ -32,6 +32,10 @@ public class KeyboardInputState {
         this.lastChangeTime = System.nanoTime();
         this.lastKeyDown = keyDown;
         this.lastKey = keyCode;
+        if (gg.vape.module.none.ClientSettings.INSTANCE == null) {
+            this.canceled = false;
+            return;
+        }
         EventKeyPress event = new EventKeyPress(keyCode, keyDown);
         event.fire();
         this.canceled = event.isCanceled();
@@ -65,4 +69,3 @@ public class KeyboardInputState {
         this.keyStates.put(keyCode, false);
     }
 }
-

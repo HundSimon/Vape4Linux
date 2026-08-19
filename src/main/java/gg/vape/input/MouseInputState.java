@@ -19,6 +19,9 @@ public class MouseInputState {
         this.lastChangeTime = System.nanoTime();
         this.lastButtonDown = buttonDown;
         this.lastButton = button;
+        if (ClientSettings.INSTANCE == null) {
+            return false;
+        }
         if (!ClientSettings.INSTANCE.inputEnabled) {
             if (buttonDown) {
                 GuiScreenNativeCallbackBridge.mouseClicked(null, this.mouseX, this.mouseY, button);
@@ -42,7 +45,7 @@ public class MouseInputState {
     public boolean updateCursorPosition(int mouseX, int mouseY) {
         this.mouseX = mouseX;
         this.mouseY = mouseY;
-        if (!ClientSettings.INSTANCE.inputEnabled) {
+        if (ClientSettings.INSTANCE != null && !ClientSettings.INSTANCE.inputEnabled) {
             GuiScreenNativeCallbackBridge.handleMouseInput(null);
         }
         return false;
@@ -66,6 +69,10 @@ public class MouseInputState {
     }
 
     public boolean setScrollDelta(int scrollDelta) {
+        if (ClientSettings.INSTANCE == null) {
+            this.scrollDelta = scrollDelta;
+            return false;
+        }
         if (!ClientSettings.INSTANCE.inputEnabled) {
             this.scrollDelta = scrollDelta;
             return true;
@@ -100,4 +107,3 @@ public class MouseInputState {
         return this.scrollDelta;
     }
 }
-
