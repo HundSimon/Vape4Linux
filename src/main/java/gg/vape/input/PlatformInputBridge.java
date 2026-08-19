@@ -1,5 +1,7 @@
 package gg.vape.input;
 
+import gg.vape.module.none.ClientSettings;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -77,44 +79,56 @@ public final class PlatformInputBridge {
     public static boolean onGlfwKey(int key, int scanCode, int action, int modifiers) {
         int virtualKey = glfwToVirtualKey(key);
         if (virtualKey == 0) {
-            return false;
+            return isGuiCapturingInput();
         }
+        boolean guiWasCapturing = isGuiCapturingInput();
         long metadata = ((long)scanCode & 0xffL) << 16;
         if (virtualKey == 163 || virtualKey == 165 || virtualKey == 161) {
             metadata |= 0x1000000L;
         }
         int event = action == RELEASE ? 257 : action == REPEAT ? 260 : 256;
-        return InputEventDispatcher.getInstance().dispatch(event, virtualKey, metadata);
+        boolean handled = InputEventDispatcher.getInstance().dispatch(
+                event, virtualKey, metadata);
+        return handled || guiWasCapturing || isGuiCapturingInput();
     }
 
     public static boolean onCodePoint(int codePoint) {
         if (!Character.isValidCodePoint(codePoint)) {
-            return false;
+            return isGuiCapturingInput();
         }
+        boolean guiWasCapturing = isGuiCapturingInput();
+        boolean handled;
         if (codePoint <= Character.MAX_VALUE) {
-            return InputEventDispatcher.getInstance().dispatch(258, codePoint, 0L);
+            handled = InputEventDispatcher.getInstance().dispatch(258, codePoint, 0L);
+            return handled || guiWasCapturing || isGuiCapturingInput();
         }
         char[] surrogatePair = Character.toChars(codePoint);
         boolean first = InputEventDispatcher.getInstance().dispatch(
                 258, surrogatePair[0], 0L);
         boolean second = InputEventDispatcher.getInstance().dispatch(
                 258, surrogatePair[1], 0L);
-        return first || second;
+        return first || second || guiWasCapturing || isGuiCapturingInput();
     }
 
     public static boolean onMouseButton(int button, int action, int modifiers) {
-        return InputEventDispatcher.getInstance().getMouseState()
+        boolean guiWasCapturing = isGuiCapturingInput();
+        boolean handled = InputEventDispatcher.getInstance().getMouseState()
                 .setButtonState(button, action != RELEASE);
+        return handled || guiWasCapturing || isGuiCapturingInput();
     }
 
     public static boolean onCursorPosition(double x, double y) {
-        return InputEventDispatcher.getInstance().getMouseState()
+        boolean guiWasCapturing = isGuiCapturingInput();
+        boolean handled = InputEventDispatcher.getInstance().getMouseState()
                 .updateCursorPosition((int)Math.round(x), (int)Math.round(y));
+        return handled || guiWasCapturing || isGuiCapturingInput();
     }
 
     public static boolean onScroll(double horizontal, double vertical) {
-        return InputEventDispatcher.getInstance().getMouseState()
+        boolean guiWasCapturing = isGuiCapturingInput();
+        boolean handled = InputEventDispatcher.getInstance().getMouseState()
                 .setScrollDelta((int)Math.round(vertical * 120.0));
+        return handled || guiWasCapturing || isGuiCapturingInput();
     }
 
     public static void onFocus(boolean focused) {
@@ -134,5 +148,9 @@ public final class PlatformInputBridge {
                     .isButtonDown(virtualKey - 1);
         }
         return down ? (short)0x100 : 0;
+    }
+
+    private static boolean isGuiCapturingInput() {
+        return ClientSettings.INSTANCE != null && !ClientSettings.INSTANCE.inputEnabled;
     }
 }

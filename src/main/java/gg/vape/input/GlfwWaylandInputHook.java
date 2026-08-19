@@ -11,8 +11,9 @@ import java.util.concurrent.Executor;
 
 /**
  * Installs process-local GLFW callbacks without depending on LWJGL3 at build
- * time.  Minecraft keeps ownership of its original callbacks; each wrapper
- * delegates to the original before updating the recovered client's state.
+ * time. Minecraft keeps ownership of its original callbacks; each wrapper
+ * first offers an event to the recovered client and delegates unconsumed
+ * events to Minecraft.
  */
 public final class GlfwWaylandInputHook {
     private static final List<Object> CALLBACK_REFERENCES = new ArrayList<Object>();
@@ -67,42 +68,43 @@ public final class GlfwWaylandInputHook {
             Class<?> glfw = Class.forName("org.lwjgl.glfw.GLFW", true, loader);
             install(glfw, loader, handle, "Key", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
-                    PlatformInputBridge.onGlfwKey(intArg(arguments, 1),
+                public boolean accept(Object[] arguments) {
+                    return PlatformInputBridge.onGlfwKey(intArg(arguments, 1),
                             intArg(arguments, 2), intArg(arguments, 3), intArg(arguments, 4));
                 }
             });
             install(glfw, loader, handle, "CharMods", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
-                    PlatformInputBridge.onCodePoint(intArg(arguments, 1));
+                public boolean accept(Object[] arguments) {
+                    return PlatformInputBridge.onCodePoint(intArg(arguments, 1));
                 }
             });
             install(glfw, loader, handle, "MouseButton", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
-                    PlatformInputBridge.onMouseButton(intArg(arguments, 1),
+                public boolean accept(Object[] arguments) {
+                    return PlatformInputBridge.onMouseButton(intArg(arguments, 1),
                             intArg(arguments, 2), intArg(arguments, 3));
                 }
             });
             install(glfw, loader, handle, "CursorPos", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
-                    PlatformInputBridge.onCursorPosition(doubleArg(arguments, 1),
+                public boolean accept(Object[] arguments) {
+                    return PlatformInputBridge.onCursorPosition(doubleArg(arguments, 1),
                             doubleArg(arguments, 2));
                 }
             });
             install(glfw, loader, handle, "Scroll", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
-                    PlatformInputBridge.onScroll(doubleArg(arguments, 1),
+                public boolean accept(Object[] arguments) {
+                    return PlatformInputBridge.onScroll(doubleArg(arguments, 1),
                             doubleArg(arguments, 2));
                 }
             });
             install(glfw, loader, handle, "WindowFocus", new EventSink() {
                 @Override
-                public void accept(Object[] arguments) {
+                public boolean accept(Object[] arguments) {
                     PlatformInputBridge.onFocus(((Boolean)arguments[1]).booleanValue());
+                    return false;
                 }
             });
 
@@ -132,16 +134,9 @@ public final class GlfwWaylandInputHook {
                             return invokeDefault(proxy, method, arguments);
                         }
                         if ("invoke".equals(method.getName())) {
-                            if (previous[0] != null) {
-                                try {
-                                    method.invoke(previous[0], arguments);
-                                }
-                                catch (java.lang.reflect.InvocationTargetException error) {
-                                    throw error.getCause();
-                                }
-                            }
+                            boolean consumed = false;
                             try {
-                                sink.accept(arguments);
+                                consumed = sink.accept(arguments);
                             }
                             catch (Throwable error) {
                                 // No recovered-client failure may cross a native
@@ -149,6 +144,14 @@ public final class GlfwWaylandInputHook {
                                 if (!clientFailureLogged[0]) {
                                     clientFailureLogged[0] = true;
                                     logFailure("handle " + callbackInterface.getSimpleName(), error);
+                                }
+                            }
+                            if (!consumed && previous[0] != null) {
+                                try {
+                                    method.invoke(previous[0], arguments);
+                                }
+                                catch (java.lang.reflect.InvocationTargetException error) {
+                                    throw error.getCause();
                                 }
                             }
                             return null;
@@ -252,6 +255,6 @@ public final class GlfwWaylandInputHook {
     }
 
     private interface EventSink {
-        void accept(Object[] arguments);
+        boolean accept(Object[] arguments);
     }
 }
