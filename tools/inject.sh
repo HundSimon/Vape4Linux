@@ -8,8 +8,51 @@ force_injector="$project_root/build/injection/Vape421LinuxNativeInjector"
 agent="$project_root/build/injection/libVape421Native.so"
 payload="$project_root/build/injection/Vape421Payload.jar"
 
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+    readonly reset=$'\033[0m'
+    readonly bold=$'\033[1m'
+    readonly dim=$'\033[2m'
+    readonly cyan=$'\033[36m'
+    readonly green=$'\033[32m'
+    readonly yellow=$'\033[33m'
+    readonly red=$'\033[31m'
+else
+    readonly reset='' bold='' dim='' cyan='' green='' yellow='' red=''
+fi
+
+print_banner() {
+    printf '\n%s%s' "$bold" "$cyan"
+    cat <<'EOF'
+  ___                   __     __
+ / _ \ _ __   ___ _ __ \ \   / /_ _ _ __   ___
+| | | | '_ \ / _ \ '_ \ \ \ / / _` | '_ \ / _ \
+| |_| | |_) |  __/ | | | \ V / (_| | |_) |  __/
+ \___/| .__/ \___|_| |_|  \_/ \__,_| .__/ \___|
+      |_|                           |_|
+EOF
+    printf '%s%sLinux Injector%s\n' "$reset" "$dim" "$reset"
+    printf '%s%s%s\n\n' "$cyan" '──────────────────────────────────────────────────────' "$reset"
+}
+
+info() {
+    printf '%s%s•%s %s\n' "$bold" "$cyan" "$reset" "$*"
+}
+
+success() {
+    printf '%s%s✓%s %s\n' "$bold" "$green" "$reset" "$*"
+}
+
+warn() {
+    printf '%s%s!%s %s\n' "$bold" "$yellow" "$reset" "$*" >&2
+}
+
+die() {
+    printf '%s%s×%s %s\n' "$bold" "$red" "$reset" "$*" >&2
+    exit 1
+}
+
 usage() {
-    echo "Usage: $0 [--force] [minecraft-java-pid]" >&2
+    printf '%sUsage:%s %s [--force] [minecraft-java-pid]\n' "$bold" "$reset" "$0" >&2
 }
 
 force=false
@@ -64,13 +107,17 @@ choose_target_pid() {
     done < <(find_minecraft_pids)
 
     if ((${#candidate_pids[@]})); then
-        echo "Found Minecraft Java processes:"
+        success "Found ${#candidate_pids[@]} Minecraft Java process(es)"
+        echo
         for index in "${!candidate_pids[@]}"; do
-            printf '  [%d] PID %s  %s\n' \
-                "$((index + 1))" "${candidate_pids[$index]}" "${candidate_exes[$index]}"
+            printf '  %s%s[%d]%s  PID %-7s %s%s%s\n' \
+                "$bold" "$cyan" "$((index + 1))" "$reset" \
+                "${candidate_pids[$index]}" "$dim" "${candidate_exes[$index]}" "$reset"
         done
         echo
-        read -r -p "Select a process [1-${#candidate_pids[@]}], or enter a PID manually: " choice
+        printf '%sSelect a process%s [1-%d], or enter a PID: ' \
+            "$bold" "$reset" "${#candidate_pids[@]}"
+        read -r choice
         if [[ $choice =~ ^[0-9]+$ && ${#choice} -le 10 ]]; then
             choice_number=$((10#$choice))
         fi
@@ -81,10 +128,13 @@ choose_target_pid() {
             target_pid=$choice
         fi
     else
-        echo "No Minecraft Java process was found automatically."
-        read -r -p "Enter the Minecraft Java PID manually: " target_pid
+        warn "No Minecraft Java process was found automatically"
+        printf '%sEnter the Minecraft Java PID:%s ' "$bold" "$reset"
+        read -r target_pid
     fi
 }
+
+print_banner
 
 if (($# > 1)); then
     usage
@@ -95,7 +145,7 @@ if (($# == 1)); then
     target_pid=$1
 else
     if [[ ! -t 0 ]]; then
-        echo "No interactive terminal is available; pass the Minecraft Java PID as an argument." >&2
+        warn "No interactive terminal is available; pass the Minecraft Java PID as an argument"
         usage
         exit 2
     fi
@@ -103,40 +153,45 @@ else
 fi
 
 if [[ ! $target_pid =~ ^[0-9]+$ || ${#target_pid} -gt 10 ]]; then
-    echo "Invalid target PID: $target_pid" >&2
+    warn "Invalid target PID: $target_pid"
     usage
     exit 2
 fi
 target_pid=$((10#$target_pid))
 if ((target_pid <= 1)); then
-    echo "Invalid target PID: $target_pid" >&2
+    warn "Invalid target PID: $target_pid"
     usage
     exit 2
 fi
 
 if [[ ! -r /proc/$target_pid/status ]]; then
-    echo "Target PID does not exist or is not readable: $target_pid" >&2
-    exit 1
+    die "Target PID does not exist or is not readable: $target_pid"
 fi
 target_uid=$(awk '/^Uid:/ { print $2; exit }' "/proc/$target_pid/status")
 if [[ $target_uid != "$target_owner_uid" ]]; then
-    echo "Refusing a JVM owned by another user (UID $target_uid)" >&2
-    exit 1
+    die "Refusing a JVM owned by another user (UID $target_uid)"
 fi
 target_exe=$(readlink -f "/proc/$target_pid/exe")
 if [[ ${target_exe##*/} != java ]]; then
-    echo "Refusing non-Java target: $target_exe" >&2
-    exit 1
+    die "Refusing non-Java target: $target_exe"
 fi
+
+success "Selected Minecraft JVM"
+printf '  %sPID%s         %s\n' "$dim" "$reset" "$target_pid"
+printf '  %sExecutable%s  %s\n\n' "$dim" "$reset" "$target_exe"
 
 if [[ $force == false ]]; then
     while IFS= read -r -d '' target_argument; do
         if [[ $target_argument == -XX:+DisableAttachMechanism ]]; then
+            warn "Target JVM $target_pid has the Attach mechanism disabled"
             cat >&2 <<EOF
-Target JVM $target_pid was started with -XX:+DisableAttachMechanism.
+
+The JVM was started with -XX:+DisableAttachMechanism.
 HotSpot Attach cannot be enabled after that JVM has started.
+
 For Lunar Client, set settings.enableAttach to true in:
   $HOME/.lunarclient/settings/launcher.json
+
 Then fully restart the Minecraft game, or rerun this script with --force.
 EOF
             exit 1
@@ -146,22 +201,19 @@ fi
 
 for required in "$agent" "$payload"; do
     if [[ ! -f $required || ! -r $required ]]; then
-        echo "Required injection file is missing or unreadable: $required" >&2
-        exit 1
+        die "Required injection file is missing or unreadable: $required"
     fi
 done
 
 if [[ $force == true ]]; then
     if [[ ! -x $force_injector ]]; then
-        echo "Required native injector is missing or not executable: $force_injector" >&2
-        exit 1
+        die "Required native injector is missing or not executable: $force_injector"
     fi
     agent_hash=$(sha256sum "$agent" | awk '{ print substr($1, 1, 16) }')
     target_gid=$(awk '/^Gid:/ { print $2; exit }' "/proc/$target_pid/status")
     target_home=$(getent passwd "$target_owner_uid" | awk -F: '{ print $6; exit }')
     if [[ -z $target_home || ! -d $target_home ]]; then
-        echo "Could not resolve the target user's home directory." >&2
-        exit 1
+        die "Could not resolve the target user's home directory"
     fi
     runtime_dir="$target_home/.local/state/vape4linux/injection"
     runtime_agent="$runtime_dir/libVape421Native-$agent_hash.so"
@@ -180,25 +232,22 @@ if [[ $force == true ]]; then
         fi
     fi
     if ! cmp -s -- "$agent" "$runtime_agent"; then
-        echo "Immutable runtime agent does not match the build artifact: $runtime_agent" >&2
-        exit 1
+        die "Immutable runtime agent does not match the build artifact: $runtime_agent"
     fi
-    echo "WARNING: force mode uses ptrace and executes native code inside PID $target_pid."
-    echo "Target executable: $target_exe"
-    echo "Bootstrap log: $runtime_dir/vape421-native-$target_pid.log"
+    warn "Force mode uses ptrace and executes native code inside PID $target_pid"
+    info "Bootstrap log: $runtime_dir/vape421-native-$target_pid.log"
+    info "Starting native injection…"
     exec "$force_injector" "$target_pid" "$runtime_agent" "$payload"
 fi
 
 for required in "$java" "$injector"; do
     if [[ ! -f $required || ! -r $required ]]; then
-        echo "Required injection file is missing or unreadable: $required" >&2
-        exit 1
+        die "Required injection file is missing or unreadable: $required"
     fi
 done
 
-echo "WARNING: this target is outside the sandbox."
-echo "The injected native agent and payload will inherit all permissions of PID $target_pid."
-echo "Target executable: $target_exe"
+warn "The agent and payload inherit all permissions of PID $target_pid"
+info "Starting HotSpot Attach injection…"
 
 exec "$java" --add-modules jdk.attach -jar "$injector" \
     "$target_pid" "$agent" "$payload"
