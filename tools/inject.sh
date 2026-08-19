@@ -32,6 +32,9 @@ find_minecraft_pids() {
             || $command_line_lower == *forgeclient* \
             || $command_line_lower == *neoforgeclient* \
             || $command_line_lower == *lunarclient* \
+            || $command_line_lower == *org.prismlauncher.entrypoint* \
+            || $command_line_lower == *newlaunch.jar* \
+            || $command_line_lower == *minecraft-*client.jar* \
             || $command_line_lower == *--gamedir* \
             || $command_line_lower == *--assetsdir* ]]; then
             command_line=${command_line//$'\t'/ }
