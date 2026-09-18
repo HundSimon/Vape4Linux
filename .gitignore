@@ -1,6 +1,7 @@
 .gradle/
 build/
 out/
+gui/target/
 *.log
 src/manual/
 tmp-*/
